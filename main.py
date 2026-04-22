@@ -77,7 +77,7 @@ async def process_memory(req: MemoryRequest):
                 # 文件不存在，返回空或提示
                 return {
                     "status": "success",
-                    "message": "暂无该用户的存储数据",
+                    "message": "",
                     "context": ""
                 }
         except Exception as e:
