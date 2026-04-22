@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import datetime
 import os
@@ -9,11 +9,8 @@ app = FastAPI(title="AI智能体枢纽 API (本地TXT文件版)", version="2.0")
 # ==========================================
 # ⚙️ 本地存储配置
 # ==========================================
-# 我们在本地建一个文件夹，专门用来放 txt 记忆文件
 STORAGE_DIR = "memory_storage"
 
-
-# 🚀 启动时自动检查并创建文件夹
 @app.on_event("startup")
 def startup_event():
     if not os.path.exists(STORAGE_DIR):
@@ -24,53 +21,75 @@ def startup_event():
 
 
 # ==========================================
-# 🎯 API 1：记忆黑盒 (用 TXT 文件代替数据库)
+# 🎯 API 1：记忆黑盒 (修改为：支持覆盖存储与单独提取)
 # ==========================================
 class MemoryRequest(BaseModel):
-    user_id: str  # 用户的唯一ID，将作为 txt 的文件名
-    current_query: str  # 用户当前说的话
+    user_id: str                      # 用户的唯一ID
+    action: str = Field(..., description="操作类型：'save' 表示覆盖存储，'extract' 表示提取数据") 
+    current_query: Optional[str] = "" # 用户当前说的话（提取时可为空）
 
 
 @app.post("/api/v1/memory/process")
 async def process_memory(req: MemoryRequest):
     """
-    接收 user_id，读取对应的 txt 文件，追加新对话，再保存回 txt 文件。
+    根据 action 参数执行不同逻辑：
+    - save: 覆盖写入该用户的 txt 文件
+    - extract: 读取并返回该用户的 txt 文件内容
     """
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    new_message = f"[{now_str}] 用户输入: {req.current_query}"
-
-    # 拼装这个用户的专属文件路径，例如: memory_storage/user_123.txt
+    # 拼装这个用户的专属文件路径
     file_path = os.path.join(STORAGE_DIR, f"{req.user_id}.txt")
-    merged_context = ""
+    
+    # ---------------- 1. 存储逻辑 (覆盖) ----------------
+    if req.action == "save":
+        if not req.current_query:
+            raise HTTPException(status_code=400, detail="保存模式下 current_query 不能为空")
+            
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 格式化本次要保存的内容
+        content_to_save = f"[{now_str}] 上一轮对话信息总结: {req.current_query}"
+        
+        try:
+            # 使用 "w" 模式，直接覆盖写入
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content_to_save)
+                
+            return {
+                "status": "success",
+                "message": "数据已覆盖存储",
+                "context": content_to_save
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"文件写入失败: {str(e)}")
 
-    try:
-        # 1. 查：看看这个用户的 txt 文件存不存在
-        if os.path.exists(file_path):
-            # 如果存在，把以前的聊天记录读出来
-            with open(file_path, "r", encoding="utf-8") as f:
-                old_history = f.read()
-            # 把新话拼在老话后面
-            merged_context = f"{old_history}\n{new_message}"
-        else:
-            # 如果不存在，说明是新用户，直接用新话
-            merged_context = new_message
-
-        # 2. 存：把最新的完整聊天记录覆盖写入 txt 文件
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(merged_context)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件读写失败: {str(e)}")
-
-    # 3. 返：把拼好的长文本返回给调用者
-    return {
-        "status": "success",
-        "merged_context": merged_context
-    }
+    # ---------------- 2. 提取逻辑 (读取) ----------------
+    elif req.action == "extract":
+        try:
+            if os.path.exists(file_path):
+                # 文件存在，读取内容
+                with open(file_path, "r", encoding="utf-8") as f:
+                    saved_context = f.read()
+                return {
+                    "status": "success",
+                    "message": "数据提取成功",
+                    "context": saved_context
+                }
+            else:
+                # 文件不存在，返回空或提示
+                return {
+                    "status": "success",
+                    "message": "暂无该用户的存储数据",
+                    "context": ""
+                }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"文件读取失败: {str(e)}")
+            
+    # ---------------- 3. 错误参数兜底 ----------------
+    else:
+        raise HTTPException(status_code=400, detail="非法的 action 参数，必须为 'save' 或 'extract'")
 
 
 # ==========================================
-# 🎯 API 2：预测模型路由 (保持不变，无需数据库)
+# 🎯 API 2：预测模型路由 (保持不变)
 # ==========================================
 class PredictRequest(BaseModel):
     product_id: str
@@ -102,18 +121,16 @@ async def route_and_predict(req: PredictRequest):
         "route_info": {"selected_model": selected_model_name},
         "prediction_result": prediction_result
     }
+
 # ==========================================
 # 🚀 启动服务代码 (放在代码文件的最底部)
 # ==========================================
 if __name__ == "__main__":
     import uvicorn
     import os
-    
+
     # 核心：获取云端的随机端口，如果是在本地则用 8000
     port = int(os.environ.get("PORT", 8000))
-    
+
     # 注意：上面和这行前面，都有 4 个空格！
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
