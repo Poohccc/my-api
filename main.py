@@ -102,4 +102,15 @@ async def route_and_predict(req: PredictRequest):
         "route_info": {"selected_model": selected_model_name},
         "prediction_result": prediction_result
     }
+    if __name__ == "__main__":
+    import uvicorn
+    import os
+    
+    # 核心修改：尝试获取云端环境变量 PORT，如果获取不到（在本地），就默认用 8000
+    # 注意一定要用 int() 转成整数！
+    port = int(os.environ.get("PORT", 8000))
+    
+    # host 必须是 0.0.0.0
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
 
